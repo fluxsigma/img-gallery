@@ -1,25 +1,28 @@
 const express = require("express");
 const multer = require("multer");
 const bodyParser = require("body-parser");
-const mysql = require("mysql2");
+const mysql = require("mysql2/promise");
 const fs = require("fs");
 const path = require("path");
 
 const app = express();
-const port = 3000;
+const port = process.env.PORT || 3000;
 
-// MySQL connection
-const db = mysql.createConnection({
-  host: "localhost",
-  user: "root",
-  password: "aditya",
-  database: "image_gallery"
-});
-
-db.connect(err => {
-  if (err) console.log("Database connection failed:", err);
-  else console.log("Connected to database successfully");
-});
+// MySQL connection using Railway environment variables
+let db;
+(async () => {
+  try {
+    db = await mysql.createConnection({
+      host: process.env.MYSQL_HOST,
+      user: process.env.MYSQL_USER,
+      password: process.env.MYSQL_PASSWORD,
+      database: process.env.MYSQL_DB
+    });
+    console.log("Connected to database successfully");
+  } catch (err) {
+    console.log("Database connection failed:", err);
+  }
+})();
 
 // Multer setup
 const storage = multer.diskStorage({
@@ -37,88 +40,82 @@ app.use(bodyParser.json());
 // Routes
 
 // Get all images
-app.get("/images", (req, res) => {
-  db.query("SELECT * FROM images ORDER BY id DESC", (err, results) => {
-    if (err) return res.status(500).json({ error: err.message });
+app.get("/images", async (req, res) => {
+  try {
+    const [results] = await db.query("SELECT * FROM images ORDER BY id DESC");
     res.json(results);
-  });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // Upload image
-app.post("/upload", upload.single("image"), (req, res) => {
+app.post("/upload", upload.single("image"), async (req, res) => {
   if (!req.file) return res.status(400).json({ message: "No file uploaded" });
 
   const filename = req.file.filename;
   const description = req.body.description;
 
-  db.query(
-    "INSERT INTO images (filename, description) VALUES (?, ?)",
-    [filename, description],
-    (err) => {
-      if (err) {
-        console.log("DB Error:", err);
-        return res.status(500).json({ message: "DB error" });
-      }
-      res.status(200).json({ message: "Upload successful" });
-    }
-  );
+  try {
+    await db.query("INSERT INTO images (filename, description) VALUES (?, ?)", [filename, description]);
+    res.status(200).json({ message: "Upload successful" });
+  } catch (err) {
+    console.log("DB Error:", err);
+    res.status(500).json({ message: "DB error" });
+  }
 });
 
 // Delete image
-app.post("/delete/:id", (req, res) => {
+app.post("/delete/:id", async (req, res) => {
   const id = req.params.id;
 
-  db.query("SELECT filename FROM images WHERE id = ?", [id], (err, results) => {
-    if (err || results.length === 0) return res.status(500).json({ message: "Not found" });
+  try {
+    const [rows] = await db.query("SELECT filename FROM images WHERE id = ?", [id]);
+    if (rows.length === 0) return res.status(404).json({ message: "Not found" });
 
-    const filename = results[0].filename;
+    const filename = rows[0].filename;
 
     fs.unlink(path.join(__dirname, "uploads", filename), (err) => {
       if (err) console.log("File delete error:", err);
     });
 
-    db.query("DELETE FROM images WHERE id = ?", [id], (err) => {
-      if (err) return res.status(500).json({ message: "DB delete error" });
-      res.status(200).json({ message: "Deleted" });
-    });
-  });
+    await db.query("DELETE FROM images WHERE id = ?", [id]);
+    res.status(200).json({ message: "Deleted" });
+  } catch (err) {
+    res.status(500).json({ message: "DB delete error" });
+  }
 });
 
 // Update image/description
-app.post("/update/:id", upload.single("image"), (req, res) => {
+app.post("/update/:id", upload.single("image"), async (req, res) => {
   const id = req.params.id;
   const description = req.body.description;
 
-  if (req.file) {
-    const newFilename = req.file.filename;
+  try {
+    if (req.file) {
+      const newFilename = req.file.filename;
 
-    db.query("SELECT filename FROM images WHERE id = ?", [id], (err, results) => {
-      if (err || results.length === 0) return res.status(500).json({ message: "Not found" });
+      const [rows] = await db.query("SELECT filename FROM images WHERE id = ?", [id]);
+      if (rows.length === 0) return res.status(404).json({ message: "Not found" });
 
-      const oldFilename = results[0].filename;
+      const oldFilename = rows[0].filename;
 
       fs.unlink(path.join(__dirname, "uploads", oldFilename), (err) => {
         if (err) console.log("Old file delete error:", err);
       });
 
-      db.query(
+      await db.query(
         "UPDATE images SET filename = ?, description = ? WHERE id = ?",
-        [newFilename, description, id],
-        (err) => {
-          if (err) return res.status(500).json({ message: "DB update error" });
-          res.status(200).json({ message: "Updated" });
-        }
+        [newFilename, description, id]
       );
-    });
-  } else {
-    db.query(
-      "UPDATE images SET description = ? WHERE id = ?",
-      [description, id],
-      (err) => {
-        if (err) return res.status(500).json({ message: "DB update error" });
-        res.status(200).json({ message: "Updated" });
-      }
-    );
+      res.status(200).json({ message: "Updated" });
+
+    } else {
+      await db.query("UPDATE images SET description = ? WHERE id = ?", [description, id]);
+      res.status(200).json({ message: "Updated" });
+    }
+  } catch (err) {
+    res.status(500).json({ message: "DB update error" });
   }
 });
 
